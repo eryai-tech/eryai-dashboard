@@ -15,6 +15,11 @@ export default function ChatSessionPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   
+  // Reply form state
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [replySuccess, setReplySuccess] = useState(false);
+  
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -91,6 +96,49 @@ export default function ChatSessionPage() {
     setNotification({ ...notification, status: 'handled' });
   };
 
+  const handleSendReply = async () => {
+    if (!replyText.trim() || sending) return;
+    
+    setSending(true);
+    setReplySuccess(false);
+    
+    try {
+      const response = await fetch('/api/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: sessionId,
+          message: replyText.trim()
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Kunde inte skicka svar');
+      }
+      
+      // Lägg till det nya meddelandet i listan
+      setMessages(prev => [...prev, data.message]);
+      setReplyText('');
+      setReplySuccess(true);
+      
+      // Uppdatera notification status
+      if (notification) {
+        setNotification({ ...notification, status: 'handled' });
+      }
+      
+      // Ta bort success-meddelandet efter 3 sekunder
+      setTimeout(() => setReplySuccess(false), 3000);
+      
+    } catch (err) {
+      console.error('Error sending reply:', err);
+      alert('Fel: ' + err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -110,6 +158,7 @@ export default function ChatSessionPage() {
   const guestName = session?.metadata?.guest_name || notification?.guest_name || 'Okänd gäst';
   const guestContact = session?.metadata?.guest_email || session?.metadata?.guest_phone || 
                        notification?.guest_email || notification?.guest_phone || 'Ej angiven';
+  const hasGuestEmail = !!(session?.metadata?.guest_email || notification?.guest_email);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -191,35 +240,93 @@ export default function ChatSessionPage() {
             <h2 className="font-medium text-gray-900">Chatthistorik</h2>
           </div>
           
-          <div className="p-4 space-y-4 max-h-[600px] overflow-y-auto">
+          <div className="p-4 space-y-4 max-h-[500px] overflow-y-auto">
             {messages.length === 0 ? (
               <p className="text-gray-500 text-center py-8">Inga meddelanden</p>
             ) : (
-              messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
+              messages.map((msg) => {
+                const isUser = msg.role === 'user';
+                const isHuman = msg.sender_type === 'human';
+                
+                return (
                   <div
-                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                      msg.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-900'
-                    }`}
+                    key={msg.id}
+                    className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                    <p className={`text-xs mt-1 ${
-                      msg.role === 'user' ? 'text-blue-200' : 'text-gray-400'
-                    }`}>
-                      {new Date(msg.timestamp).toLocaleTimeString('sv-SE', {
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </p>
+                    <div
+                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                        isUser
+                          ? 'bg-blue-600 text-white'
+                          : isHuman
+                          ? 'bg-green-100 text-gray-900 border border-green-300'
+                          : 'bg-gray-100 text-gray-900'
+                      }`}
+                    >
+                      {/* Visa vem som skickade */}
+                      {!isUser && (
+                        <p className={`text-xs font-semibold mb-1 ${
+                          isHuman ? 'text-green-700' : 'text-gray-500'
+                        }`}>
+                          {isHuman ? '👤 Personal' : '🤖 Sofia'}
+                        </p>
+                      )}
+                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      <p className={`text-xs mt-1 ${
+                        isUser ? 'text-blue-200' : isHuman ? 'text-green-600' : 'text-gray-400'
+                      }`}>
+                        {new Date(msg.timestamp).toLocaleTimeString('sv-SE', {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
+          </div>
+          
+          {/* Reply form */}
+          <div className="p-4 border-t border-gray-200 bg-gray-50">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <span>💬 Svara som personal</span>
+                {hasGuestEmail && (
+                  <span className="text-green-600">• Gästen får email-notis</span>
+                )}
+                {!hasGuestEmail && (
+                  <span className="text-amber-600">• Ingen email (gästen måste kolla chatten)</span>
+                )}
+              </div>
+              
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder="Skriv ditt svar här..."
+                rows={3}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 resize-none"
+                disabled={sending}
+              />
+              
+              <div className="flex items-center justify-between">
+                {replySuccess && (
+                  <span className="text-green-600 text-sm">✓ Svar skickat!</span>
+                )}
+                {!replySuccess && <span />}
+                
+                <button
+                  onClick={handleSendReply}
+                  disabled={!replyText.trim() || sending}
+                  className={`px-6 py-2 rounded-lg font-medium transition ${
+                    !replyText.trim() || sending
+                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                      : 'bg-green-600 text-white hover:bg-green-700'
+                  }`}
+                >
+                  {sending ? 'Skickar...' : 'Skicka svar'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </main>
