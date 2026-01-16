@@ -1,5 +1,4 @@
 'use client'
-
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase-browser'
 import { useRouter } from 'next/navigation'
@@ -27,7 +26,7 @@ export default function LoginPage() {
 
       // Check MFA status
       const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-
+      
       if (aalData?.currentLevel === 'aal1' && aalData?.nextLevel === 'aal2') {
         // User has MFA, needs to verify
         router.push('/mfa/verify')
@@ -59,4 +58,52 @@ export default function LoginPage() {
 
         {/* Error message */}
         {error && (
-          <div classN
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* Login form */}
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+              E-post
+            </label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-eryai-500 focus:border-transparent"
+              placeholder="din@email.com"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
+              Lösenord
+            </label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-eryai-500 focus:border-transparent"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 bg-eryai-600 text-white rounded-lg font-medium hover:bg-eryai-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Loggar in...' : 'Logga in'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
