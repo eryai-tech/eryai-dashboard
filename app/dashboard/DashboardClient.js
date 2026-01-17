@@ -21,14 +21,39 @@ export default function DashboardClient({
   const router = useRouter()
   const supabase = createClient()
 
+  // Hjälpfunktion för att hämta gästnamn
+  const getGuestDisplayName = (session) => {
+    // Prioritet: metadata.guest_name > visitor_id > "Anonym besökare"
+    if (session.metadata?.guest_name) {
+      return session.metadata.guest_name
+    }
+    if (session.visitor_id && !session.visitor_id.startsWith('visitor_')) {
+      return session.visitor_id
+    }
+    return 'Anonym besökare'
+  }
+
+  // Hjälpfunktion för att hämta gästkontakt
+  const getGuestContact = (session) => {
+    return session.metadata?.guest_email || session.metadata?.guest_phone || null
+  }
+
   // Filter sessions
   const filteredSessions = sessions.filter(session => {
     if (filterCustomer && session.customer_id !== filterCustomer) return false
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
-      const visitorId = session.visitor_id?.toLowerCase() || ''
+      const guestName = getGuestDisplayName(session).toLowerCase()
+      const guestEmail = session.metadata?.guest_email?.toLowerCase() || ''
+      const guestPhone = session.metadata?.guest_phone || ''
       const customerName = session.customers?.name?.toLowerCase() || ''
-      if (!visitorId.includes(query) && !customerName.includes(query)) return false
+      
+      if (!guestName.includes(query) && 
+          !guestEmail.includes(query) && 
+          !guestPhone.includes(query) &&
+          !customerName.includes(query)) {
+        return false
+      }
     }
     return true
   })
@@ -52,6 +77,10 @@ export default function DashboardClient({
     loadMessages(session.id)
   }
 
+  const handleOpenFullChat = (sessionId) => {
+    router.push(`/chat/${sessionId}`)
+  }
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
     router.push('/login')
@@ -68,13 +97,22 @@ export default function DashboardClient({
     })
   }
 
-  const getStatusBadge = (status) => {
+  const getStatusBadge = (session) => {
+    // Visa "Behöver svar" om needs_human är true
+    if (session.needs_human) {
+      return (
+        <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+          Behöver svar
+        </span>
+      )
+    }
+    
     const statusMap = {
       active: { bg: 'bg-green-100', text: 'text-green-700', label: 'Aktiv' },
       ended: { bg: 'bg-gray-100', text: 'text-gray-700', label: 'Avslutad' },
       waiting: { bg: 'bg-yellow-100', text: 'text-yellow-700', label: 'Väntar' }
     }
-    const s = statusMap[status] || statusMap.ended
+    const s = statusMap[session.status] || statusMap.ended
     return (
       <span className={`px-2 py-1 rounded-full text-xs font-medium ${s.bg} ${s.text}`}>
         {s.label}
@@ -123,7 +161,7 @@ export default function DashboardClient({
                 {/* Search */}
                 <input
                   type="text"
-                  placeholder="Sök..."
+                  placeholder="Sök på namn, email, telefon..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-eryai-500 focus:border-transparent"
@@ -151,33 +189,45 @@ export default function DashboardClient({
                     <p>Inga konversationer ännu</p>
                   </div>
                 ) : (
-                  filteredSessions.map(session => (
-                    <button
-                      key={session.id}
-                      onClick={() => handleSelectSession(session)}
-                      className={`w-full p-4 text-left border-b hover:bg-gray-50 transition ${
-                        selectedSession?.id === session.id ? 'bg-eryai-50' : ''
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-medium text-gray-800 truncate">
-                          {session.visitor_id || 'Anonym besökare'}
-                        </span>
-                        {getStatusBadge(session.status)}
-                      </div>
-                      
-                      {isSuperadmin && session.customers?.name && (
-                        <p className="text-xs text-eryai-600 mb-1">
-                          {session.customers.name}
-                        </p>
-                      )}
-                      
-                      <div className="flex items-center justify-between text-xs text-gray-500">
-                        <span>{formatDate(session.updated_at)}</span>
-                        <span>{session.message_count || 0} meddelanden</span>
-                      </div>
-                    </button>
-                  ))
+                  filteredSessions.map(session => {
+                    const guestName = getGuestDisplayName(session)
+                    const guestContact = getGuestContact(session)
+                    
+                    return (
+                      <button
+                        key={session.id}
+                        onClick={() => handleSelectSession(session)}
+                        className={`w-full p-4 text-left border-b hover:bg-gray-50 transition ${
+                          selectedSession?.id === session.id ? 'bg-eryai-50' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium text-gray-800 truncate">
+                            {guestName}
+                          </span>
+                          {getStatusBadge(session)}
+                        </div>
+                        
+                        {/* Visa kontaktinfo om det finns */}
+                        {guestContact && (
+                          <p className="text-xs text-gray-500 truncate mb-1">
+                            {guestContact}
+                          </p>
+                        )}
+                        
+                        {isSuperadmin && session.customers?.name && (
+                          <p className="text-xs text-eryai-600 mb-1">
+                            {session.customers.name}
+                          </p>
+                        )}
+                        
+                        <div className="flex items-center justify-between text-xs text-gray-500">
+                          <span>{formatDate(session.updated_at)}</span>
+                          <span>{session.message_count || 0} meddelanden</span>
+                        </div>
+                      </button>
+                    )
+                  })
                 )}
               </div>
             </div>
@@ -193,13 +243,26 @@ export default function DashboardClient({
                     <div className="flex items-center justify-between">
                       <div>
                         <h3 className="font-semibold text-gray-800">
-                          {selectedSession.visitor_id || 'Anonym besökare'}
+                          {getGuestDisplayName(selectedSession)}
                         </h3>
+                        {getGuestContact(selectedSession) && (
+                          <p className="text-sm text-gray-600">
+                            {getGuestContact(selectedSession)}
+                          </p>
+                        )}
                         <p className="text-sm text-gray-500">
                           Startad {formatDate(selectedSession.session_start)}
                         </p>
                       </div>
-                      {getStatusBadge(selectedSession.status)}
+                      <div className="flex items-center gap-3">
+                        {getStatusBadge(selectedSession)}
+                        <button
+                          onClick={() => handleOpenFullChat(selectedSession.id)}
+                          className="px-3 py-1.5 bg-eryai-600 text-white text-sm rounded-lg hover:bg-eryai-700 transition"
+                        >
+                          Öppna fullvy →
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -214,29 +277,61 @@ export default function DashboardClient({
                         Inga meddelanden
                       </div>
                     ) : (
-                      messages.map((msg, idx) => (
-                        <div
-                          key={idx}
-                          className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                        >
+                      messages.map((msg, idx) => {
+                        const isUser = msg.role === 'user'
+                        const isHuman = msg.sender_type === 'human'
+                        
+                        return (
                           <div
-                            className={
-                              msg.role === 'user'
-                                ? 'chat-bubble-user'
-                                : 'chat-bubble-assistant'
-                            }
+                            key={idx}
+                            className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                           >
-                            <p className="whitespace-pre-wrap">{msg.content}</p>
-                            <p className={`text-xs mt-1 ${
-                              msg.role === 'user' ? 'text-eryai-200' : 'text-gray-400'
-                            }`}>
-                              {formatDate(msg.created_at)}
-                            </p>
+                            <div
+                              className={
+                                isUser
+                                  ? 'chat-bubble-user'
+                                  : isHuman
+                                  ? 'max-w-[80%] rounded-2xl px-4 py-3 bg-green-100 border border-green-300 text-gray-800'
+                                  : 'chat-bubble-assistant'
+                              }
+                            >
+                              {/* Visa vem som skickade (för AI/Human) */}
+                              {!isUser && (
+                                <p className={`text-xs font-semibold mb-1 ${
+                                  isHuman ? 'text-green-700' : 'text-gray-500'
+                                }`}>
+                                  {isHuman ? '👤 Personal' : '🤖 Sofia'}
+                                </p>
+                              )}
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                              <p className={`text-xs mt-1 ${
+                                isUser ? 'text-eryai-200' : isHuman ? 'text-green-600' : 'text-gray-400'
+                              }`}>
+                                {formatDate(msg.created_at)}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        )
+                      })
                     )}
                   </div>
+
+                  {/* Quick action footer */}
+                  {selectedSession.needs_human && (
+                    <div className="p-4 border-t bg-amber-50">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-amber-800">
+                          ⚠️ Denna konversation behöver ditt svar
+                        </span>
+                        <button
+                          onClick={() => handleOpenFullChat(selectedSession.id)}
+                          className="px-4 py-2 bg-amber-600 text-white text-sm rounded-lg hover:bg-amber-700 transition"
+                        >
+                          Svara nu →
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-500">
