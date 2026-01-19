@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase-browser'
 import { useRouter } from 'next/navigation'
 
@@ -9,6 +9,7 @@ export default function MFAVerifyPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [factorId, setFactorId] = useState('')
+  const inputRef = useRef(null)
   const router = useRouter()
   const supabase = createClient()
 
@@ -26,14 +27,18 @@ export default function MFAVerifyPage() {
     if (factors?.totp && factors.totp.length > 0) {
       setFactorId(factors.totp[0].id)
     } else {
-      // No factors, redirect to setup
       router.push('/mfa/setup')
     }
   }
 
+  const handleCodeChange = (e) => {
+    const value = e.target.value.replace(/\D/g, '').slice(0, 6)
+    setCode(value)
+  }
+
   const handleVerify = async (e) => {
-    e.preventDefault()
-    if (!factorId) return
+    if (e) e.preventDefault()
+    if (!factorId || code.length !== 6) return
     
     setLoading(true)
     setError('')
@@ -57,6 +62,7 @@ export default function MFAVerifyPage() {
     } catch (err) {
       setError('Felaktig kod, försök igen')
       setCode('')
+      inputRef.current?.focus()
     } finally {
       setLoading(false)
     }
@@ -66,6 +72,9 @@ export default function MFAVerifyPage() {
     await supabase.auth.signOut()
     router.push('/login')
   }
+
+  // Check if button should be enabled
+  const isValidCode = code.length === 6
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-eryai-50 to-eryai-100 p-4">
@@ -89,16 +98,21 @@ export default function MFAVerifyPage() {
         )}
 
         {/* Verify form */}
-        <form onSubmit={handleVerify} className="space-y-4">
+        <div className="space-y-4">
           <div>
             <input
+              ref={inputRef}
               type="text"
               inputMode="numeric"
-              pattern="[0-9]*"
+              autoComplete="one-time-code"
               maxLength={6}
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-              required
+              onChange={handleCodeChange}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && isValidCode) {
+                  handleVerify()
+                }
+              }}
               className="w-full px-4 py-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-eryai-500 focus:border-transparent transition text-center text-3xl tracking-widest font-mono"
               placeholder="000000"
               autoFocus
@@ -106,17 +120,19 @@ export default function MFAVerifyPage() {
           </div>
 
           <button
-            type="submit"
-            disabled={loading || code.length !== 6}
+            type="button"
+            onClick={handleVerify}
+            disabled={loading || !isValidCode}
             className="w-full bg-eryai-600 text-white py-3 rounded-lg font-medium hover:bg-eryai-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Verifierar...' : 'Verifiera'}
           </button>
-        </form>
+        </div>
 
         {/* Back to login */}
         <div className="mt-6 text-center">
           <button
+            type="button"
             onClick={handleLogout}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
