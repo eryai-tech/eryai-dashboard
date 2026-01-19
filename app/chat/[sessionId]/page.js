@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import { useParams, useRouter } from 'next/navigation';
 
@@ -20,11 +20,89 @@ export default function ChatSessionPage() {
   const [sending, setSending] = useState(false);
   const [replySuccess, setReplySuccess] = useState(false);
   
+  // Real-time state
+  const [visitorTyping, setVisitorTyping] = useState(false);
+  const [isStaffTyping, setIsStaffTyping] = useState(false);
+  const typingTimeoutRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
 
+  // Scroll to bottom of messages
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // Update staff typing status
+  const updateStaffTyping = useCallback(async (typing) => {
+    if (isStaffTyping === typing) return;
+    setIsStaffTyping(typing);
+    
+    try {
+      await supabase
+        .from('chat_sessions')
+        .update({ staff_typing: typing })
+        .eq('id', sessionId);
+    } catch (err) {
+      console.error('Error updating typing status:', err);
+    }
+  }, [sessionId, supabase, isStaffTyping]);
+
+  // Handle staff typing input
+  const handleReplyChange = (e) => {
+    setReplyText(e.target.value);
+    
+    // Set typing to true
+    updateStaffTyping(true);
+    
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
+    // Set new timeout to stop typing after 2 seconds of no input
+    typingTimeoutRef.current = setTimeout(() => {
+      updateStaffTyping(false);
+    }, 2000);
+  };
+
+  // Poll for new messages and typing status
+  const pollForUpdates = useCallback(async () => {
+    if (!sessionId) return;
+    
+    try {
+      // Check visitor typing status
+      const { data: sessionData } = await supabase
+        .from('chat_sessions')
+        .select('visitor_typing')
+        .eq('id', sessionId)
+        .single();
+      
+      if (sessionData) {
+        setVisitorTyping(sessionData.visitor_typing || false);
+      }
+      
+      // Check for new messages
+      const { data: newMessages } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('timestamp', { ascending: true });
+      
+      if (newMessages && newMessages.length > messages.length) {
+        setMessages(newMessages);
+        scrollToBottom();
+      }
+    } catch (err) {
+      console.error('Poll error:', err);
+    }
+  }, [sessionId, supabase, messages.length, scrollToBottom]);
+
+  // Initial data load
   useEffect(() => {
     async function loadData() {
       try {
@@ -37,6 +115,7 @@ export default function ChatSessionPage() {
 
         if (sessionError) throw sessionError;
         setSession(sessionData);
+        setVisitorTyping(sessionData?.visitor_typing || false);
 
         // Hämta meddelanden
         const { data: messagesData, error: messagesError } = await supabase
@@ -80,6 +159,29 @@ export default function ChatSessionPage() {
     }
   }, [sessionId, supabase]);
 
+  // Start polling when component mounts
+  useEffect(() => {
+    // Poll every 2 seconds for real-time feel
+    pollIntervalRef.current = setInterval(pollForUpdates, 2000);
+    
+    // Cleanup on unmount
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      // Clear staff typing status when leaving
+      updateStaffTyping(false);
+    };
+  }, [pollForUpdates, updateStaffTyping]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
   const handleMarkAsHandled = async () => {
     if (!notification) return;
     
@@ -98,6 +200,12 @@ export default function ChatSessionPage() {
 
   const handleSendReply = async () => {
     if (!replyText.trim() || sending) return;
+    
+    // Stop typing indicator
+    updateStaffTyping(false);
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
     
     setSending(true);
     setReplySuccess(false);
@@ -136,6 +244,14 @@ export default function ChatSessionPage() {
       alert('Fel: ' + err.message);
     } finally {
       setSending(false);
+    }
+  };
+
+  // Handle Enter key to send
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendReply();
     }
   };
 
@@ -178,14 +294,25 @@ export default function ChatSessionPage() {
             <p className="text-sm text-gray-500">{guestContact}</p>
           </div>
           
-          {notification && notification.status !== 'handled' && (
-            <button
-              onClick={handleMarkAsHandled}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
-            >
-              ✓ Markera som hanterad
-            </button>
-          )}
+          <div className="flex items-center gap-4">
+            {/* Live indicator */}
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              Live
+            </div>
+            
+            {notification && notification.status !== 'handled' && (
+              <button
+                onClick={handleMarkAsHandled}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
+              >
+                ✓ Markera som hanterad
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -284,6 +411,25 @@ export default function ChatSessionPage() {
                 );
               })
             )}
+            
+            {/* Visitor typing indicator */}
+            {visitorTyping && (
+              <div className="flex justify-end">
+                <div className="bg-blue-100 text-blue-700 rounded-lg px-4 py-2 text-sm">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="typing-dots">
+                      <span className="dot">.</span>
+                      <span className="dot">.</span>
+                      <span className="dot">.</span>
+                    </span>
+                    Kunden skriver...
+                  </span>
+                </div>
+              </div>
+            )}
+            
+            {/* Scroll anchor */}
+            <div ref={messagesEndRef} />
           </div>
           
           {/* Reply form */}
@@ -301,18 +447,23 @@ export default function ChatSessionPage() {
               
               <textarea
                 value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                placeholder="Skriv ditt svar här..."
+                onChange={handleReplyChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Skriv ditt svar här... (Enter för att skicka, Shift+Enter för ny rad)"
                 rows={3}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 resize-none"
                 disabled={sending}
               />
               
               <div className="flex items-center justify-between">
-                {replySuccess && (
-                  <span className="text-green-600 text-sm">✓ Svar skickat!</span>
-                )}
-                {!replySuccess && <span />}
+                <div className="flex items-center gap-3">
+                  {replySuccess && (
+                    <span className="text-green-600 text-sm">✓ Svar skickat!</span>
+                  )}
+                  {isStaffTyping && !replySuccess && (
+                    <span className="text-gray-400 text-sm italic">Kunden ser att du skriver...</span>
+                  )}
+                </div>
                 
                 <button
                   onClick={handleSendReply}
@@ -330,6 +481,22 @@ export default function ChatSessionPage() {
           </div>
         </div>
       </main>
+      
+      {/* Typing animation styles */}
+      <style jsx>{`
+        .typing-dots .dot {
+          animation: typingBounce 1.4s infinite ease-in-out;
+          font-weight: bold;
+          font-size: 1.2em;
+        }
+        .typing-dots .dot:nth-child(1) { animation-delay: 0s; }
+        .typing-dots .dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typingBounce {
+          0%, 60%, 100% { opacity: 0.3; }
+          30% { opacity: 1; }
+        }
+      `}</style>
     </div>
   );
 }
