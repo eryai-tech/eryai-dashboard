@@ -31,12 +31,35 @@ export default async function DashboardPage() {
   // Use admin client to bypass RLS
   const adminClient = createAdminClient()
 
-  // Fetch sessions - simple query first
-  const { data: sessions, error } = await adminClient
+  // Get customer_id for this user from dashboard_users
+  let customerId = null
+  let customerName = null
+
+  if (!isSuperadmin) {
+    const { data: dashboardUser } = await adminClient
+      .from('dashboard_users')
+      .select('customer_id, customers(id, name)')
+      .eq('user_id', user.id)
+      .single()
+    
+    if (dashboardUser) {
+      customerId = dashboardUser.customer_id
+      customerName = dashboardUser.customers?.name || null
+    }
+  }
+
+  // Fetch sessions - filter by customer if not superadmin
+  let sessionsQuery = adminClient
     .from('chat_sessions')
-    .select('*')
-    .order('session_start', { ascending: false })
+    .select('*, customers(name)')
+    .order('updated_at', { ascending: false })
     .limit(100)
+
+  if (!isSuperadmin && customerId) {
+    sessionsQuery = sessionsQuery.eq('customer_id', customerId)
+  }
+
+  const { data: sessions, error } = await sessionsQuery
 
   console.log('Sessions error:', error)
   console.log('Sessions count:', sessions?.length)
@@ -55,8 +78,8 @@ export default async function DashboardPage() {
     <DashboardClient
       user={user}
       isSuperadmin={isSuperadmin}
-      customerId={null}
-      customerName={null}
+      customerId={customerId}
+      customerName={customerName}
       initialSessions={sessions || []}
       customers={customers}
     />
