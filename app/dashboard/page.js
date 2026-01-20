@@ -63,7 +63,7 @@ export default async function DashboardPage() {
   // Fetch sessions - filter by customer if not superadmin
   let sessionsQuery = adminClient
     .from('chat_sessions')
-    .select('*, customers(name)')
+    .select('*')
     .order('updated_at', { ascending: false })
     .limit(100)
 
