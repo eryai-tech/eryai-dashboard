@@ -68,8 +68,15 @@ export default async function DashboardPage() {
     .limit(100)
 
   if (!isSuperadmin && customerId) {
-    sessionsQuery = sessionsQuery.eq('customer_id', customerId)
+    // Regular customer: only their sessions, hide suspicious
+    sessionsQuery = sessionsQuery
+      .eq('customer_id', customerId)
+      .or('suspicious.is.null,suspicious.eq.false')
+  } else if (!isSuperadmin) {
+    // Non-superadmin without customer - still hide suspicious
+    sessionsQuery = sessionsQuery.or('suspicious.is.null,suspicious.eq.false')
   }
+  // Superadmin sees ALL sessions including suspicious
 
   const { data: sessions, error } = await sessionsQuery
 
