@@ -3,10 +3,10 @@ import { NextResponse } from 'next/server'
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url)
-  const sessionId = searchParams.get('session_id')
+  const sessionId = searchParams.get('sessionId') || searchParams.get('session_id')
 
   if (!sessionId) {
-    return NextResponse.json({ error: 'session_id required' }, { status: 400 })
+    return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
   }
 
   // Use admin client to bypass RLS
@@ -24,7 +24,7 @@ export async function GET(request) {
   // Fetch messages
   const { data: messages, error } = await supabase
     .from('chat_messages')
-    .select('*')
+    .select('id, session_id, role, content, timestamp, sender_type')
     .eq('session_id', sessionId)
     .order('timestamp', { ascending: true })
 
@@ -33,5 +33,15 @@ export async function GET(request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  return NextResponse.json({ messages })
+  // Transform to match expected format in DashboardClient
+  const formattedMessages = (messages || []).map(msg => ({
+    id: msg.id,
+    session_id: msg.session_id,
+    role: msg.role,
+    content: msg.content,
+    created_at: msg.timestamp,
+    sender_type: msg.sender_type
+  }))
+
+  return NextResponse.json({ messages: formattedMessages })
 }
