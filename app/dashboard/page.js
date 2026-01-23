@@ -186,6 +186,10 @@ export default async function DashboardPage() {
       query = query.or('suspicious.is.null,suspicious.eq.false')
     }
     
+    // Filter out test sessions for all users (including superadmin in customer view)
+    // Test sessions from monitoring should not clutter the dashboard
+    query = query.not('metadata->is_test', 'eq', 'true')
+    
     const { data, error } = await query
     
     if (error) {
