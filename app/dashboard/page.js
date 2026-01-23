@@ -145,7 +145,7 @@ export default async function DashboardPage() {
     customerMap[c.id] = { name: c.name, slug: c.slug }
   })
 
-  // Fetch sessions - WITHOUT the join that's causing issues
+  // Fetch sessions - using ACTUAL column names from chat_sessions table
   let sessions = []
   
   if (isSuperadmin || customers.length > 0) {
@@ -156,14 +156,21 @@ export default async function DashboardPage() {
       .select(`
         id,
         customer_id,
-        guest_name,
-        guest_email,
+        visitor_id,
+        session_start,
+        session_end,
+        message_count,
+        metadata,
         created_at,
         updated_at,
+        status,
+        needs_human,
         is_read,
+        deleted_at,
         assigned_to,
         assigned_type,
-        deleted_at
+        assigned_user_id,
+        assigned_team_id
       `)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
@@ -183,13 +190,21 @@ export default async function DashboardPage() {
     sessions = data || []
   }
 
-  // Add customer info and message count to sessions
-  const sessionsWithCount = sessions.map(s => ({
-    ...s,
-    is_read: s.is_read ?? true,
-    message_count: 0,
-    customer: customerMap[s.customer_id] || { name: 'Okänd', slug: '' }
-  }))
+  // Add customer info and extract guest info from metadata
+  const sessionsWithCount = sessions.map(s => {
+    // Extract guest info from metadata if available
+    const metadata = s.metadata || {}
+    const guestName = metadata.guest_name || metadata.name || metadata.guestName || null
+    const guestEmail = metadata.guest_email || metadata.email || metadata.guestEmail || null
+    
+    return {
+      ...s,
+      guest_name: guestName,
+      guest_email: guestEmail,
+      is_read: s.is_read ?? true,
+      customer: customerMap[s.customer_id] || { name: 'Okänd', slug: '' }
+    }
+  })
 
   // Fetch team members for assignment
   if (customers.length > 0) {
