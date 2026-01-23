@@ -22,10 +22,13 @@ export default function DashboardClient({
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [filterCustomer, setFilterCustomer] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
-  const [activeView, setActiveView] = useState('chats') // 'chats' | 'settings' | 'admin'
+  const [activeView, setActiveView] = useState('chats')
   const [showOnlyUnread, setShowOnlyUnread] = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
   const [showActionMenu, setShowActionMenu] = useState(null)
+  const [showEscalateModal, setShowEscalateModal] = useState(null)
+  const [teamMembers, setTeamMembers] = useState([])
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false)
   const actionMenuRef = useRef(null)
   const router = useRouter()
   const supabase = createClient()
@@ -47,6 +50,50 @@ export default function DashboardClient({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Fetch team members when escalate modal opens
+  useEffect(() => {
+    if (showEscalateModal) {
+      fetchTeamMembers()
+    }
+  }, [showEscalateModal])
+
+  const fetchTeamMembers = async () => {
+    setLoadingTeamMembers(true)
+    try {
+      const response = await fetch(`/api/admin/users?customer_id=${customerId || ''}`)
+      const data = await response.json()
+      if (data.users) {
+        // Filter out current user and format for display
+        const members = data.users
+          .filter(u => u.user_id !== user.id && !u.is_invite)
+          .map(u => ({
+            id: u.user_id,
+            email: u.email,
+            name: u.email?.split('@')[0] || 'Användare',
+            role: u.role,
+            team_name: u.team_name,
+            type: 'user'
+          }))
+        
+        // Also fetch teams
+        const teamsResponse = await fetch(`/api/admin/teams?customer_id=${customerId || ''}`)
+        const teamsData = await teamsResponse.json()
+        const teams = (teamsData.teams || []).map(t => ({
+          id: t.id,
+          name: t.name,
+          member_count: t.member_count,
+          type: 'team'
+        }))
+
+        setTeamMembers([...teams, ...members])
+      }
+    } catch (err) {
+      console.error('Failed to fetch team members:', err)
+    } finally {
+      setLoadingTeamMembers(false)
+    }
+  }
+
   // Hjälpfunktion för att hämta gästnamn
   const getGuestDisplayName = (session) => {
     if (session.metadata?.guest_name) {
@@ -64,12 +111,12 @@ export default function DashboardClient({
   }
 
   // Hämta customer name från customers array
-  const getCustomerName = (customerId) => {
-    const customer = customers?.find(c => c.id === customerId)
+  const getCustomerName = (custId) => {
+    const customer = customers?.find(c => c.id === custId)
     return customer?.name || null
   }
 
-  // Filter sessions - uppdaterad med oläst-filter
+  // Filter sessions
   const filteredSessions = sessions.filter(session => {
     if (filterCustomer && session.customer_id !== filterCustomer) return false
     if (showOnlyUnread && session.is_read) return false
@@ -192,6 +239,48 @@ export default function DashboardClient({
     }
   }
 
+  const handleEscalate = async (sessionId, assignee) => {
+    setActionLoading(sessionId)
+    try {
+      const response = await fetch('/api/sessions', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          sessionId, 
+          action: 'assign',
+          data: {
+            toUserId: assignee.type === 'user' ? assignee.id : null,
+            toTeamId: assignee.type === 'team' ? assignee.id : null
+          }
+        })
+      })
+      if (response.ok) {
+        setSessions(prev => prev.map(s => 
+          s.id === sessionId ? { 
+            ...s, 
+            assigned_user_id: assignee.type === 'user' ? assignee.id : null,
+            assigned_team_id: assignee.type === 'team' ? assignee.id : null,
+            assigned_name: assignee.name || assignee.email
+          } : s
+        ))
+        // Update selected session if it's the one being assigned
+        if (selectedSession?.id === sessionId) {
+          setSelectedSession(prev => ({
+            ...prev,
+            assigned_user_id: assignee.type === 'user' ? assignee.id : null,
+            assigned_team_id: assignee.type === 'team' ? assignee.id : null,
+            assigned_name: assignee.name || assignee.email
+          }))
+        }
+      }
+    } catch (err) {
+      console.error('Failed to escalate:', err)
+    } finally {
+      setActionLoading(null)
+      setShowEscalateModal(null)
+    }
+  }
+
   // ============================================
   // EXISTING FUNCTIONS
   // ============================================
@@ -275,19 +364,30 @@ export default function DashboardClient({
     )
   }
 
+  const getAssignedBadge = (session) => {
+    if (session.assigned_user_id || session.assigned_team_id) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700">
+          → {session.assigned_name || 'Tilldelad'}
+        </span>
+      )
+    }
+    return null
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100">
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-lg border-b border-slate-200/60 sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto px-6 py-4">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 sm:py-4">
           <div className="flex items-center justify-between">
             {/* Logo & Role */}
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-200">
-                  <span className="text-white font-bold text-lg">E</span>
+            <div className="flex items-center gap-2 sm:gap-4">
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="w-8 h-8 sm:w-10 sm:h-10 bg-gradient-to-br from-violet-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-200">
+                  <span className="text-white font-bold text-sm sm:text-lg">E</span>
                 </div>
-                <div>
+                <div className="hidden sm:block">
                   <h1 className="text-xl font-bold bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">
                     EryAI
                   </h1>
@@ -296,17 +396,17 @@ export default function DashboardClient({
               </div>
               
               {isSuperadmin ? (
-                <span className="px-3 py-1.5 bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 text-xs font-semibold rounded-full border border-violet-200">
+                <span className="hidden sm:inline-flex px-3 py-1.5 bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 text-xs font-semibold rounded-full border border-violet-200">
                   ⚡ Superadmin
                 </span>
               ) : customerName ? (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 text-sm font-medium rounded-full">
+                <span className="hidden sm:inline-flex px-3 py-1.5 bg-slate-100 text-slate-600 text-sm font-medium rounded-full">
                   {customerName}
                 </span>
               ) : null}
             </div>
 
-            {/* Navigation Tabs */}
+            {/* Navigation Tabs - Desktop */}
             <div className="hidden md:flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
               <button
                 onClick={() => setActiveView('chats')}
@@ -347,7 +447,7 @@ export default function DashboardClient({
               )}
             </div>
 
-            {/* Stats */}
+            {/* Stats - Desktop */}
             <div className="hidden lg:flex items-center gap-4">
               {needsResponseCount > 0 && (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-xl border border-red-100">
@@ -359,10 +459,10 @@ export default function DashboardClient({
             </div>
             
             {/* User menu */}
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center">
-                  <span className="text-slate-600 font-medium text-sm">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center">
+                  <span className="text-slate-600 font-medium text-xs sm:text-sm">
                     {user.email?.charAt(0).toUpperCase()}
                   </span>
                 </div>
@@ -374,10 +474,10 @@ export default function DashboardClient({
               
               <button
                 onClick={handleLogout}
-                className="p-2.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-xl transition-all"
+                className="p-2 sm:p-2.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-xl transition-all"
                 title="Logga ut"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                 </svg>
               </button>
@@ -387,7 +487,7 @@ export default function DashboardClient({
       </header>
 
       {/* Mobile Navigation */}
-      <div className="md:hidden sticky top-[73px] z-40 bg-white border-b border-slate-200 px-4 py-2">
+      <div className="md:hidden sticky top-[57px] z-40 bg-white border-b border-slate-200 px-4 py-2">
         <div className="flex gap-1 p-1 bg-slate-100 rounded-xl">
           <button
             onClick={() => setActiveView('chats')}
@@ -418,7 +518,105 @@ export default function DashboardClient({
         </div>
       </div>
 
-      <div className="max-w-[1600px] mx-auto p-6">
+      {/* Escalate Modal */}
+      {showEscalateModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Tilldela konversation</h3>
+                <p className="text-sm text-slate-500">Välj en person eller ett team</p>
+              </div>
+              <button
+                onClick={() => setShowEscalateModal(null)}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto space-y-1">
+              {loadingTeamMembers ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-8 h-8 border-2 border-violet-200 border-t-violet-600 rounded-full animate-spin"></div>
+                </div>
+              ) : teamMembers.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-slate-500">Inga teammedlemmar tillgängliga</p>
+                  <p className="text-sm text-slate-400 mt-1">Lägg till användare i Admin-fliken</p>
+                </div>
+              ) : (
+                <>
+                  {/* Teams first */}
+                  {teamMembers.filter(m => m.type === 'team').length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-2">Team</p>
+                      {teamMembers.filter(m => m.type === 'team').map(member => (
+                        <button
+                          key={member.id}
+                          onClick={() => handleEscalate(showEscalateModal, member)}
+                          disabled={actionLoading === showEscalateModal}
+                          className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-violet-50 transition-colors text-left disabled:opacity-50"
+                        >
+                          <div className="w-10 h-10 bg-gradient-to-br from-violet-400 to-indigo-400 rounded-xl flex items-center justify-center">
+                            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-slate-800">{member.name}</p>
+                            <p className="text-xs text-slate-500">{member.member_count || 0} medlemmar</p>
+                          </div>
+                          <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* Users */}
+                  {teamMembers.filter(m => m.type === 'user').length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-2">Användare</p>
+                      {teamMembers.filter(m => m.type === 'user').map(member => (
+                        <button
+                          key={member.id}
+                          onClick={() => handleEscalate(showEscalateModal, member)}
+                          disabled={actionLoading === showEscalateModal}
+                          className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 transition-colors text-left disabled:opacity-50"
+                        >
+                          <div className="w-10 h-10 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center">
+                            <span className="text-slate-600 font-medium text-sm">
+                              {member.name?.charAt(0).toUpperCase() || '?'}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-slate-800 truncate">{member.email}</p>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-slate-500 capitalize">{member.role}</span>
+                              {member.team_name && (
+                                <span className="text-xs text-violet-600">• {member.team_name}</span>
+                              )}
+                            </div>
+                          </div>
+                          <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-[1600px] mx-auto p-4 sm:p-6">
         {/* Settings View */}
         {activeView === 'settings' && (
           <div className="max-w-2xl mx-auto">
@@ -445,7 +643,7 @@ export default function DashboardClient({
 
         {/* Chats View */}
         {activeView === 'chats' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
             {/* Sessions list */}
             <div className="lg:col-span-4 xl:col-span-3">
               <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 overflow-hidden">
@@ -474,7 +672,7 @@ export default function DashboardClient({
                     </svg>
                     <input
                       type="text"
-                      placeholder="Sök namn, email, telefon..."
+                      placeholder="Sök..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-0 rounded-xl text-sm placeholder-slate-400 focus:ring-2 focus:ring-violet-500 focus:bg-white transition-all"
@@ -520,7 +718,7 @@ export default function DashboardClient({
                 </div>
 
                 {/* Sessions */}
-                <div className="max-h-[calc(100vh-380px)] overflow-y-auto">
+                <div className="max-h-[calc(100vh-320px)] sm:max-h-[calc(100vh-380px)] overflow-y-auto">
                   {filteredSessions.length === 0 ? (
                     <div className="p-8 text-center">
                       <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -592,6 +790,13 @@ export default function DashboardClient({
                                 {custName}
                               </p>
                             )}
+
+                            {/* Show assigned badge */}
+                            {(session.assigned_user_id || session.assigned_team_id) && (
+                              <div className="ml-10 mb-1">
+                                {getAssignedBadge(session)}
+                              </div>
+                            )}
                             
                             <div className="flex items-center justify-between text-xs text-slate-400 ml-10">
                               <span>{formatDate(session.updated_at)}</span>
@@ -618,12 +823,12 @@ export default function DashboardClient({
                             
                             {/* Action dropdown */}
                             {showActionMenu === session.id && (
-                              <div className="absolute right-0 top-8 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-20">
+                              <div className="absolute right-0 top-8 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-20">
                                 {session.is_read ? (
                                   <button
                                     onClick={(e) => handleMarkAsUnread(session.id, e)}
                                     disabled={actionLoading === session.id}
-                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                                   >
                                     <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                                     Markera som oläst
@@ -632,7 +837,7 @@ export default function DashboardClient({
                                   <button
                                     onClick={(e) => handleMarkAsRead(session.id, e)}
                                     disabled={actionLoading === session.id}
-                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                                   >
                                     <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -640,13 +845,27 @@ export default function DashboardClient({
                                     Markera som läst
                                   </button>
                                 )}
+
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setShowActionMenu(null)
+                                    setShowEscalateModal(session.id)
+                                  }}
+                                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50"
+                                >
+                                  <svg className="w-4 h-4 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  </svg>
+                                  Tilldela / Eskalera
+                                </button>
                                 
                                 <div className="my-1 border-t border-slate-100"></div>
                                 
                                 <button
                                   onClick={(e) => handleDeleteSession(session.id, e)}
                                   disabled={actionLoading === session.id}
-                                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
                                 >
                                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -666,53 +885,63 @@ export default function DashboardClient({
 
             {/* Chat view */}
             <div className="lg:col-span-8 xl:col-span-9">
-              <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 h-[calc(100vh-180px)] flex flex-col overflow-hidden">
+              <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 h-[calc(100vh-200px)] sm:h-[calc(100vh-180px)] flex flex-col overflow-hidden">
                 {selectedSession ? (
                   <>
                     {/* Chat header */}
-                    <div className="p-5 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                    <div className="p-4 sm:p-5 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                          <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${
                             selectedSession.needs_human 
                               ? 'bg-gradient-to-br from-red-400 to-orange-400' 
                               : 'bg-gradient-to-br from-violet-400 to-indigo-400'
                           }`}>
-                            <span className="text-white font-bold text-lg">
+                            <span className="text-white font-bold text-base sm:text-lg">
                               {getGuestDisplayName(selectedSession).charAt(0).toUpperCase()}
                             </span>
                           </div>
-                          <div>
-                            <h3 className="font-semibold text-slate-800 text-lg">
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-slate-800 text-base sm:text-lg truncate">
                               {getGuestDisplayName(selectedSession)}
                             </h3>
-                            <div className="flex items-center gap-3 text-sm">
+                            <div className="flex items-center gap-2 sm:gap-3 text-xs sm:text-sm flex-wrap">
                               {getGuestContact(selectedSession) && (
-                                <span className="text-slate-600">
+                                <span className="text-slate-600 truncate">
                                   {getGuestContact(selectedSession)}
                                 </span>
                               )}
-                              <span className="text-slate-400">•</span>
-                              <span className="text-slate-400">
-                                Startad {formatFullDate(selectedSession.session_start)}
+                              <span className="text-slate-400 hidden sm:inline">•</span>
+                              <span className="text-slate-400 hidden sm:inline">
+                                {formatFullDate(selectedSession.session_start)}
                               </span>
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          {getStatusBadge(selectedSession)}
+                        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                          {getAssignedBadge(selectedSession)}
+                          <button
+                            onClick={() => setShowEscalateModal(selectedSession.id)}
+                            className="p-2 text-slate-500 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-all"
+                            title="Tilldela"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          </button>
                           <button
                             onClick={() => handleOpenFullChat(selectedSession.id)}
-                            className="px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-sm font-medium rounded-xl hover:from-violet-700 hover:to-indigo-700 transition-all shadow-lg shadow-violet-200"
+                            className="px-3 sm:px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-sm font-medium rounded-xl hover:from-violet-700 hover:to-indigo-700 transition-all shadow-lg shadow-violet-200"
                           >
-                            Öppna fullvy →
+                            <span className="hidden sm:inline">Öppna fullvy →</span>
+                            <span className="sm:hidden">Svara</span>
                           </button>
                         </div>
                       </div>
                     </div>
 
                     {/* Messages */}
-                    <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gradient-to-b from-slate-50/50 to-white">
+                    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 bg-gradient-to-b from-slate-50/50 to-white">
                       {loadingMessages ? (
                         <div className="flex items-center justify-center h-full">
                           <div className="flex flex-col items-center gap-3">
@@ -742,7 +971,7 @@ export default function DashboardClient({
                               className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                             >
                               <div
-                                className={`max-w-[70%] rounded-2xl px-5 py-3 shadow-sm ${
+                                className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 sm:px-5 py-3 shadow-sm ${
                                   isUser
                                     ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white'
                                     : isHuman
@@ -757,7 +986,7 @@ export default function DashboardClient({
                                     {isHuman ? '👤 Personal' : '🤖 AI-assistent'}
                                   </p>
                                 )}
-                                <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                <p className="whitespace-pre-wrap leading-relaxed text-sm sm:text-base">{msg.content}</p>
                                 <p className={`text-xs mt-2 ${
                                   isUser ? 'text-violet-200' : 'text-slate-400'
                                 }`}>
@@ -771,20 +1000,20 @@ export default function DashboardClient({
                     </div>
 
                     {selectedSession.needs_human && (
-                      <div className="p-4 border-t border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center">
+                      <div className="p-3 sm:p-4 border-t border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
                               <span className="text-xl">⚡</span>
                             </div>
-                            <div>
-                              <p className="font-medium text-amber-800">Kunden väntar på svar</p>
-                              <p className="text-sm text-amber-600">Klicka för att svara direkt</p>
+                            <div className="min-w-0">
+                              <p className="font-medium text-amber-800 text-sm sm:text-base">Kunden väntar på svar</p>
+                              <p className="text-xs sm:text-sm text-amber-600 hidden sm:block">Klicka för att svara direkt</p>
                             </div>
                           </div>
                           <button
                             onClick={() => handleOpenFullChat(selectedSession.id)}
-                            className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-medium rounded-xl hover:from-amber-600 hover:to-orange-600 transition-all shadow-lg shadow-amber-200"
+                            className="px-4 sm:px-5 py-2 sm:py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-medium rounded-xl hover:from-amber-600 hover:to-orange-600 transition-all shadow-lg shadow-amber-200 flex-shrink-0"
                           >
                             Svara nu →
                           </button>
@@ -794,14 +1023,14 @@ export default function DashboardClient({
                   </>
                 ) : (
                   <div className="flex items-center justify-center h-full">
-                    <div className="text-center">
-                      <div className="w-24 h-24 bg-gradient-to-br from-slate-100 to-slate-200 rounded-3xl flex items-center justify-center mx-auto mb-6">
-                        <svg className="w-12 h-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div className="text-center px-4">
+                      <div className="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-slate-100 to-slate-200 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                        <svg className="w-10 h-10 sm:w-12 sm:h-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                         </svg>
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-700 mb-2">Välj en konversation</h3>
-                      <p className="text-slate-500">Klicka på en chatt i listan för att se meddelanden</p>
+                      <h3 className="text-lg sm:text-xl font-semibold text-slate-700 mb-2">Välj en konversation</h3>
+                      <p className="text-slate-500 text-sm sm:text-base">Klicka på en chatt i listan för att se meddelanden</p>
                     </div>
                   </div>
                 )}
