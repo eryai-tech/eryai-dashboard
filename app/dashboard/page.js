@@ -170,15 +170,20 @@ export default async function DashboardPage() {
         assigned_to,
         assigned_type,
         assigned_user_id,
-        assigned_team_id
+        assigned_team_id,
+        suspicious,
+        suspicious_reason
       `)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
       .limit(100)
     
-    // Only filter by customer_id if not superadmin with all customers
+    // Filter by customer_id if not superadmin
     if (!isSuperadmin) {
       query = query.in('customer_id', customerIds)
+      // IMPORTANT: Hide suspicious sessions from regular customers!
+      // Suspicious sessions should only be visible to superadmin
+      query = query.or('suspicious.is.null,suspicious.eq.false')
     }
     
     const { data, error } = await query
@@ -190,12 +195,84 @@ export default async function DashboardPage() {
     sessions = data || []
   }
 
-  // Add customer info and extract guest info from metadata
+  // Extract guest name and email from messages for each session
+  // We'll do this in a batch query for efficiency
+  const sessionIds = sessions.map(s => s.id)
+  let guestNames = {}
+  let guestEmails = {}
+  
+  if (sessionIds.length > 0) {
+    // Get messages that contain GUESTNAME: pattern
+    const { data: messagesWithNames } = await adminClient
+      .from('chat_messages')
+      .select('session_id, content')
+      .in('session_id', sessionIds)
+      .eq('role', 'assistant')
+      .ilike('content', '%GUESTNAME:%')
+    
+    // Extract names from assistant messages (GUESTNAME:X format)
+    if (messagesWithNames) {
+      messagesWithNames.forEach(msg => {
+        const match = msg.content.match(/GUESTNAME:(\w+)/i)
+        if (match && match[1]) {
+          guestNames[msg.session_id] = match[1]
+        }
+      })
+    }
+    
+    // Get ALL messages to search for names and emails
+    const { data: allMessages } = await adminClient
+      .from('chat_messages')
+      .select('session_id, content, role')
+      .in('session_id', sessionIds)
+      .order('timestamp', { ascending: true })
+      .limit(1000)
+    
+    if (allMessages) {
+      allMessages.forEach(msg => {
+        // Extract email from any message (user or assistant)
+        if (!guestEmails[msg.session_id]) {
+          // Match standard email pattern
+          const emailMatch = msg.content.match(/[\w.-]+@[\w.-]+\.\w+/i)
+          if (emailMatch) {
+            guestEmails[msg.session_id] = emailMatch[0].toLowerCase()
+          }
+        }
+        
+        // Extract name from user messages if not already found
+        if (!guestNames[msg.session_id] && msg.role === 'user') {
+          const namePatterns = [
+            /my name is (\w+)/i,
+            /i'm (\w+)/i,
+            /i am (\w+)/i,
+            /heter (\w+)/i,
+            /jeg heter (\w+)/i,
+            /jeg er (\w+)/i,
+            /mitt namn är (\w+)/i,
+            /names? is (\w+)/i,
+            /call me (\w+)/i
+          ]
+          for (const pattern of namePatterns) {
+            const match = msg.content.match(pattern)
+            if (match && match[1] && match[1].length > 1) {
+              guestNames[msg.session_id] = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase()
+              break
+            }
+          }
+        }
+      })
+    }
+  }
+
+  // Add customer info and extract guest info
   const sessionsWithCount = sessions.map(s => {
-    // Extract guest info from metadata if available
-    const metadata = s.metadata || {}
-    const guestName = metadata.guest_name || metadata.name || metadata.guestName || null
-    const guestEmail = metadata.guest_email || metadata.email || metadata.guestEmail || null
+    // Get guest name and email from our extracted data
+    const extractedName = guestNames[s.id] || null
+    const extractedEmail = guestEmails[s.id] || null
+    
+    // If no name but we have email, use email as display name
+    const guestName = extractedName || extractedEmail || null
+    const guestEmail = extractedEmail
     
     return {
       ...s,
