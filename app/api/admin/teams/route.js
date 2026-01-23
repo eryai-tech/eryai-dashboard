@@ -98,6 +98,12 @@ export async function GET(request) {
     // Get member counts
     const teamIds = teams?.map(t => t.id) || []
     
+    // Create result array with member_count
+    const teamsWithCount = (teams || []).map(t => ({
+      ...t,
+      member_count: 0
+    }))
+
     if (teamIds.length > 0) {
       const { data: members } = await adminClient
         .from('dashboard_users')
@@ -109,12 +115,12 @@ export async function GET(request) {
         countMap.set(m.team_id, (countMap.get(m.team_id) || 0) + 1)
       })
 
-      teams?.forEach(t => {
+      teamsWithCount.forEach(t => {
         t.member_count = countMap.get(t.id) || 0
       })
     }
 
-    return NextResponse.json({ teams: teams || [] })
+    return NextResponse.json({ teams: teamsWithCount })
 
   } catch (error) {
     console.error('Fetch teams error:', error)
@@ -252,7 +258,7 @@ export async function DELETE(request) {
       .select('*', { count: 'exact', head: true })
       .eq('team_id', team_id)
 
-    if (count > 0) {
+    if (count && count > 0) {
       return NextResponse.json({ 
         error: `Teamet har ${count} medlemmar. Flytta dem först innan du raderar.` 
       }, { status: 400 })
