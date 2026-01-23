@@ -25,6 +25,7 @@ export default function MFASetupPage() {
       const { data: existingFactors } = await supabase.auth.mfa.listFactors()
       if (existingFactors?.totp) {
         for (const factor of existingFactors.totp) {
+          // @ts-ignore - Supabase types incorrectly mark status as only "verified"
           if (factor.status === 'unverified') {
             await supabase.auth.mfa.unenroll({ factorId: factor.id })
           }
