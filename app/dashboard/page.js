@@ -37,18 +37,12 @@ export default async function DashboardPage() {
   // Use admin client for data fetching
   const adminClient = createAdminClient()
 
-  console.log('=== DEBUG START ===')
-  console.log('User ID:', user.id)
-  console.log('User Email:', user.email)
-
   // Check if superadmin
-  const { data: superadminData, error: superadminError } = await adminClient
+  const { data: superadminData } = await adminClient
     .from('superadmins')
     .select('id')
     .eq('user_id', user.id)
     .single()
-  
-  console.log('Superadmin check:', { superadminData, superadminError })
   
   const isSuperadmin = !!superadminData
 
@@ -60,48 +54,35 @@ export default async function DashboardPage() {
   let teamMembers = []
 
   if (isSuperadmin) {
-    console.log('User is SUPERADMIN')
     // Superadmin sees all customers with logo_url
-    const { data, error } = await adminClient
+    const { data } = await adminClient
       .from('customers')
       .select('id, name, slug, plan, logo_url')
       .order('name')
-    console.log('Superadmin customers:', { data, error })
     customers = data || []
     if (customers.length > 0) {
-      initialCustomerId = customers[0].id
+      initialCustomerId = null // Show "Alla kunder" first
       customerPlan = customers[0].plan || 'starter'
       customerLogo = customers[0].logo_url
     }
     userRole = 'superadmin'
   } else {
-    console.log('User is NOT superadmin, checking memberships...')
-    
     // Check user_memberships for org-level access
-    const { data: memberships, error: membershipError } = await adminClient
+    const { data: memberships } = await adminClient
       .from('user_memberships')
       .select('id, role, organization_id, customer_id, team_id')
       .eq('user_id', user.id)
 
-    console.log('Memberships query result:', { memberships, membershipError })
-
     if (memberships && memberships.length > 0) {
       const orgMembership = memberships.find(m => m.organization_id)
-      console.log('Org membership found:', orgMembership)
       
       if (orgMembership) {
         // User has org access - get all customers in this organization
-        const { data: orgCustomers, error: orgCustomersError } = await adminClient
+        const { data: orgCustomers } = await adminClient
           .from('customers')
           .select('id, name, slug, plan, logo_url')
           .eq('organization_id', orgMembership.organization_id)
           .order('name')
-        
-        console.log('Org customers query:', { 
-          organization_id: orgMembership.organization_id,
-          orgCustomers, 
-          orgCustomersError 
-        })
         
         customers = orgCustomers || []
         userRole = orgMembership.role || 'member'
@@ -117,38 +98,31 @@ export default async function DashboardPage() {
           customerPlan = orgData.plan
         }
       } else if (memberships.some(m => m.customer_id)) {
-        console.log('Direct customer access')
         // Direct customer access
         const customerIds = memberships.filter(m => m.customer_id).map(m => m.customer_id)
         
-        const { data: customerData, error: customerError } = await adminClient
+        const { data: customerData } = await adminClient
           .from('customers')
           .select('id, name, slug, plan, logo_url')
           .in('id', customerIds)
           .order('name')
-        
-        console.log('Direct customer query:', { customerIds, customerData, customerError })
         
         customers = customerData || []
         userRole = memberships[0]?.role || 'member'
       }
 
       if (customers.length > 0) {
-        // Don't set initialCustomerId - let user see "Alla kunder" first
-        initialCustomerId = null
+        initialCustomerId = null // Show "Alla kunder" first
         customerPlan = customers[0].plan || customerPlan
         customerLogo = customers[0].logo_url
       }
     } else {
-      console.log('No memberships found, checking dashboard_users...')
       // Fallback to dashboard_users
-      const { data: dashboardUser, error: dashboardError } = await adminClient
+      const { data: dashboardUser } = await adminClient
         .from('dashboard_users')
         .select('customer_id, customers(id, name, slug, plan, logo_url)')
         .eq('user_id', user.id)
         .single()
-
-      console.log('Dashboard users query:', { dashboardUser, dashboardError })
 
       if (dashboardUser?.customers) {
         customers = [{
@@ -165,42 +139,19 @@ export default async function DashboardPage() {
     }
   }
 
-  console.log('=== CUSTOMERS RESULT ===')
-  console.log('Customers count:', customers.length)
-  console.log('Customers:', customers.map(c => c.name))
+  // Create a map of customer_id -> customer for easy lookup
+  const customerMap = {}
+  customers.forEach(c => {
+    customerMap[c.id] = { name: c.name, slug: c.slug }
+  })
 
-  // Fetch sessions - get ALL sessions for the user's customers
+  // Fetch sessions - WITHOUT the join that's causing issues
   let sessions = []
   
-  if (isSuperadmin) {
-    // Superadmin sees all sessions
-    const { data, error } = await adminClient
-      .from('chat_sessions')
-      .select(`
-        id,
-        customer_id,
-        guest_name,
-        guest_email,
-        created_at,
-        updated_at,
-        is_read,
-        assigned_to,
-        assigned_type,
-        deleted_at,
-        customer:customers(name, slug)
-      `)
-      .is('deleted_at', null)
-      .order('updated_at', { ascending: false })
-      .limit(100)
-    
-    console.log('Superadmin sessions query:', { count: data?.length, error })
-    sessions = data || []
-  } else if (customers.length > 0) {
-    // Get sessions for all user's customers
+  if (isSuperadmin || customers.length > 0) {
     const customerIds = customers.map(c => c.id)
-    console.log('Fetching sessions for customerIds:', customerIds)
     
-    const { data, error } = await adminClient
+    let query = adminClient
       .from('chat_sessions')
       .select(`
         id,
@@ -212,41 +163,43 @@ export default async function DashboardPage() {
         is_read,
         assigned_to,
         assigned_type,
-        deleted_at,
-        customer:customers(name, slug)
+        deleted_at
       `)
-      .in('customer_id', customerIds)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
       .limit(100)
     
-    console.log('Sessions query result:', { count: data?.length, error })
+    // Only filter by customer_id if not superadmin with all customers
+    if (!isSuperadmin) {
+      query = query.in('customer_id', customerIds)
+    }
+    
+    const { data, error } = await query
+    
+    if (error) {
+      console.error('Sessions query error:', error)
+    }
+    
     sessions = data || []
-  } else {
-    console.log('No customers, skipping sessions fetch')
   }
 
-  console.log('=== SESSIONS RESULT ===')
-  console.log('Sessions count:', sessions.length)
-
-  // Add message count and default is_read
+  // Add customer info and message count to sessions
   const sessionsWithCount = sessions.map(s => ({
     ...s,
     is_read: s.is_read ?? true,
-    message_count: 0
+    message_count: 0,
+    customer: customerMap[s.customer_id] || { name: 'Okänd', slug: '' }
   }))
 
-  // Fetch team members for assignment (from all customers in org)
+  // Fetch team members for assignment
   if (customers.length > 0) {
     const customerIds = customers.map(c => c.id)
     
-    // Get members from user_memberships
     const { data: members } = await adminClient
       .from('user_memberships')
       .select('user_id, role')
       .or(customerIds.map(id => `customer_id.eq.${id}`).join(','))
 
-    // Also check dashboard_users as fallback
     const { data: dashboardMembers } = await adminClient
       .from('dashboard_users')
       .select('user_id')
@@ -257,7 +210,6 @@ export default async function DashboardPage() {
       ...(dashboardMembers || []).map(m => m.user_id)
     ])
 
-    // Get user details from user_profiles or auth
     if (allMemberIds.size > 0) {
       const { data: userProfiles } = await adminClient
         .from('user_profiles')
@@ -274,13 +226,6 @@ export default async function DashboardPage() {
       }
     }
   }
-
-  console.log('=== FINAL OUTPUT ===')
-  console.log('isSuperadmin:', isSuperadmin)
-  console.log('customers:', customers.length)
-  console.log('sessions:', sessionsWithCount.length)
-  console.log('userRole:', userRole)
-  console.log('=== DEBUG END ===')
 
   return (
     <DashboardClient
