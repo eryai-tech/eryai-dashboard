@@ -70,20 +70,14 @@ export default async function DashboardPage() {
     // Check user_memberships for org-level access
     const { data: memberships } = await adminClient
       .from('user_memberships')
-      .select(`
-        role,
-        organization_id,
-        customer_id,
-        organizations(id, name),
-        customers(id, name, slug, plan, logo_url)
-      `)
+      .select('id, role, organization_id, customer_id, team_id')
       .eq('user_id', user.id)
 
     if (memberships && memberships.length > 0) {
       const orgMembership = memberships.find(m => m.organization_id)
       
       if (orgMembership) {
-        // User has org access - get all customers in org
+        // User has org access - get all customers in this organization
         const { data: orgCustomers } = await adminClient
           .from('customers')
           .select('id, name, slug, plan, logo_url')
@@ -92,23 +86,35 @@ export default async function DashboardPage() {
         
         customers = orgCustomers || []
         userRole = orgMembership.role || 'member'
-      } else {
+        
+        // Also get the organization's plan
+        const { data: orgData } = await adminClient
+          .from('organizations')
+          .select('plan')
+          .eq('id', orgMembership.organization_id)
+          .single()
+        
+        if (orgData?.plan) {
+          customerPlan = orgData.plan
+        }
+      } else if (memberships.some(m => m.customer_id)) {
         // Direct customer access
-        customers = memberships
-          .filter(m => m.customers)
-          .map(m => ({
-            id: m.customers.id,
-            name: m.customers.name,
-            slug: m.customers.slug,
-            plan: m.customers.plan,
-            logo_url: m.customers.logo_url
-          }))
+        const customerIds = memberships.filter(m => m.customer_id).map(m => m.customer_id)
+        
+        const { data: customerData } = await adminClient
+          .from('customers')
+          .select('id, name, slug, plan, logo_url')
+          .in('id', customerIds)
+          .order('name')
+        
+        customers = customerData || []
         userRole = memberships[0]?.role || 'member'
       }
 
       if (customers.length > 0) {
-        initialCustomerId = customers[0].id
-        customerPlan = customers[0].plan || 'starter'
+        // Don't set initialCustomerId - let user see "Alla kunder" first
+        initialCustomerId = null
+        customerPlan = customers[0].plan || customerPlan
         customerLogo = customers[0].logo_url
       }
     } else {
@@ -134,75 +140,101 @@ export default async function DashboardPage() {
     }
   }
 
-  // Fetch sessions
-  let sessionsQuery = adminClient
-    .from('chat_sessions')
-    .select(`
-      id,
-      customer_id,
-      guest_name,
-      guest_email,
-      created_at,
-      updated_at,
-      is_read,
-      assigned_to,
-      assigned_type,
-      deleted_at,
-      customer:customers(name, slug)
-    `)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false })
-    .limit(100)
-
-  if (!isSuperadmin && customers.length > 0) {
+  // Fetch sessions - get ALL sessions for the user's customers
+  let sessions = []
+  
+  if (isSuperadmin) {
+    // Superadmin sees all sessions
+    const { data } = await adminClient
+      .from('chat_sessions')
+      .select(`
+        id,
+        customer_id,
+        guest_name,
+        guest_email,
+        created_at,
+        updated_at,
+        is_read,
+        assigned_to,
+        assigned_type,
+        deleted_at,
+        customer:customers(name, slug)
+      `)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .limit(100)
+    
+    sessions = data || []
+  } else if (customers.length > 0) {
+    // Get sessions for all user's customers
     const customerIds = customers.map(c => c.id)
-    sessionsQuery = sessionsQuery.in('customer_id', customerIds)
+    
+    const { data } = await adminClient
+      .from('chat_sessions')
+      .select(`
+        id,
+        customer_id,
+        guest_name,
+        guest_email,
+        created_at,
+        updated_at,
+        is_read,
+        assigned_to,
+        assigned_type,
+        deleted_at,
+        customer:customers(name, slug)
+      `)
+      .in('customer_id', customerIds)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .limit(100)
+    
+    sessions = data || []
   }
 
-  const { data: sessions } = await sessionsQuery
-
   // Add message count and default is_read
-  const sessionsWithCount = (sessions || []).map(s => ({
+  const sessionsWithCount = sessions.map(s => ({
     ...s,
     is_read: s.is_read ?? true,
     message_count: 0
   }))
 
-  // Fetch team members for assignment
-  if (initialCustomerId) {
+  // Fetch team members for assignment (from all customers in org)
+  if (customers.length > 0) {
+    const customerIds = customers.map(c => c.id)
+    
+    // Get members from user_memberships
     const { data: members } = await adminClient
       .from('user_memberships')
-      .select(`
-        user_id,
-        role,
-        users:user_id(id, email)
-      `)
-      .eq('customer_id', initialCustomerId)
+      .select('user_id, role')
+      .or(customerIds.map(id => `customer_id.eq.${id}`).join(','))
 
     // Also check dashboard_users as fallback
     const { data: dashboardMembers } = await adminClient
       .from('dashboard_users')
       .select('user_id')
-      .eq('customer_id', initialCustomerId)
+      .in('customer_id', customerIds)
 
     const allMemberIds = new Set([
       ...(members || []).map(m => m.user_id),
       ...(dashboardMembers || []).map(m => m.user_id)
     ])
 
-    // Get user details
+    // Get user details from user_profiles or auth
     if (allMemberIds.size > 0) {
       const { data: userProfiles } = await adminClient
         .from('user_profiles')
         .select('user_id, name, email')
         .in('user_id', Array.from(allMemberIds))
 
-      teamMembers = (userProfiles || []).map(p => ({
-        id: p.user_id,
-        name: p.name,
-        email: p.email,
-        role: members?.find(m => m.user_id === p.user_id)?.role || 'member'
-      }))
+      if (userProfiles && userProfiles.length > 0) {
+        teamMembers = userProfiles.map(p => ({
+          id: p.user_id,
+          name: p.name,
+          email: p.email,
+          role: members?.find(m => m.user_id === p.user_id)?.role || 'member'
+        }))
+      }
     }
   }
 
