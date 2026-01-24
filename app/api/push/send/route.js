@@ -2,16 +2,37 @@ import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import webpush from 'web-push';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+// Lazy initialization - skapas först vid första anrop
+let supabase = null;
+let vapidConfigured = false;
 
-webpush.setVapidDetails(
-  'mailto:eric@eryai.tech',
-  process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
-  process.env.VAPID_PRIVATE_KEY
-);
+function getSupabase() {
+  if (!supabase) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_KEY;
+    if (!url || !key) {
+      throw new Error('Supabase environment variables not configured');
+    }
+    supabase = createClient(url, key);
+  }
+  return supabase;
+}
+
+function configureVapid() {
+  if (!vapidConfigured) {
+    const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    const privateKey = process.env.VAPID_PRIVATE_KEY;
+    if (!publicKey || !privateKey) {
+      throw new Error('VAPID environment variables not configured');
+    }
+    webpush.setVapidDetails(
+      'mailto:eric@eryai.tech',
+      publicKey,
+      privateKey
+    );
+    vapidConfigured = true;
+  }
+}
 
 export async function POST(request) {
   try {
@@ -27,6 +48,10 @@ export async function POST(request) {
       );
     }
 
+    // Initialize clients lazily
+    const db = getSupabase();
+    configureVapid();
+
     const { customerId, userId, title, body, data } = await request.json();
 
     if (!title || !body) {
@@ -37,7 +62,7 @@ export async function POST(request) {
     }
 
     // Hämta subscriptions - antingen för specifik user eller alla för en customer
-    let query = supabase.from('push_subscriptions').select('*');
+    let query = db.from('push_subscriptions').select('*');
     
     if (userId) {
       query = query.eq('user_id', userId);
@@ -92,7 +117,7 @@ export async function POST(request) {
           console.error('Push send error:', err.statusCode, err.message);
           // Ta bort ogiltiga subscriptions
           if (err.statusCode === 410 || err.statusCode === 404) {
-            await supabase
+            await db
               .from('push_subscriptions')
               .delete()
               .eq('endpoint', sub.endpoint);
@@ -104,7 +129,6 @@ export async function POST(request) {
     );
 
     const sent = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
-
     console.log(`Push API: Sent ${sent}/${subscriptions.length}`);
 
     return NextResponse.json({ 
